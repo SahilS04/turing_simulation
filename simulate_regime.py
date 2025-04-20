@@ -15,7 +15,7 @@ import os, json, shutil, subprocess
 import numpy as np, pandas as pd, matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from tqdm import tqdm
-from hopf_turing import critical_mode, lambda_plus
+from hopf_turing import critical_mode, lambda_plus, lambda_max_complex
 
 # ----------------- user settings -----------------
 D_RATIO = 100.0
@@ -41,7 +41,7 @@ betas  = np.linspace(*beta_rng,  GRID_RES)
 analytic = np.empty((GRID_RES, GRID_RES), dtype=int)
 for i, b in enumerate(betas):
     for j, a in enumerate(alphas):
-        lam = lambda_plus(a, b, DA, DB)
+        lam = lambda_max_complex(a, b, DA, DB)
         # 0=stable,1=dampedOsc,2=growOsc,3=growStat
         analytic[i,j] = (lam.real>0)*1 + (abs(lam.imag)>1e-6)*((lam.real>0)*1 + (lam.real<0)*0)
 
