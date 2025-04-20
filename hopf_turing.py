@@ -13,92 +13,119 @@ Refinements
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.colors import ListedColormap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import brentq
 
 # ---- kinetics ----
 
 def steady_state(alpha, beta):
+    """
+    Compute homogeneous steady states A0, B0:
+        A0 = alpha + beta
+        B0 = beta/(alpha+beta)^2
+    """
     A0 = alpha + beta
     B0 = beta / (alpha + beta) ** 2
     return A0, B0
 
 
 def jacobian(alpha, beta):
+    """
+    Jacobian of reaction kinetics at (A0,B0).
+    """
     A0, B0 = steady_state(alpha, beta)
     fu = -1 + 2 * A0 * B0
     fv = A0 ** 2
     gu = -2 * A0 * B0
-    gv = -A0 ** 2
-    return np.array([[fu, fv], [gu, gv]], dtype=float)
+    gv = 0.0
+    return fu, fv, gu, gv
 
 # ---- dispersion ----
 
 def lambda_plus(alpha, beta, DA, DB, k):
-    J = jacobian(alpha, beta)
-    fu, fv, gu, gv = J[0, 0], J[0, 1], J[1, 0], J[1, 1]
-    tr0, det0 = fu + gv, fu * gv - fv * gu
+    """
+    Larger eigenvalue λ₊ of the linearized system at wavenumber k.
+    """
+    fu, fv, gu, gv = jacobian(alpha, beta)
+    tr0 = fu + gv
+    det0 = fu * gv - fv * gu
     k2 = k * k
     tr = tr0 - (DA + DB) * k2
     det = det0 - (DA * gv + DB * fu) * k2 + DA * DB * k2 ** 2
-    disc = tr ** 2 - 4 * det
-    return 0.5 * (tr + np.sqrt(disc + 0j))  # principal branch
+    disc = tr * tr - 4 * det
+    return 0.5 * (tr + np.sqrt(disc + 0j))
 
 
 def critical_mode(alpha, beta, DA, DB):
-    """Return k_c where Re λ is maximal using Brent root of derivative."""
-    # derivative of Re λ wrt k using complex‑step for stability
-    def dlamdk(k):
+    """
+    Find k_c that maximizes Re λ⁺ via Brent's method on derivative.
+    """
+    def deriv(k):
         eps = 1e-6
-        lam_c = lambda_plus(alpha, beta, DA, DB, k + 1j * eps)
-        return lam_c.imag / eps  # d(Re λ)/dk
+        lam = lambda_plus(alpha, beta, DA, DB, k + 1j * eps)
+        return lam.imag / eps
 
-    # bracket maximum roughly (0, 2)
-    k_left, k_right = 1e-6, 2.0
     try:
-        root = brentq(dlamdk, k_left, k_right, maxiter=200)
+        return brentq(deriv, 1e-6, 2.0, maxiter=200)
     except ValueError:
-        root = 0.0  # monotone; peak at k=0
-    return root
+        return 0.0
 
 
 def lambda_max_complex(alpha, beta, DA, DB):
+    """
+    Return λ₊(k_c) at the most unstable wavenumber.
+    """
     kc = critical_mode(alpha, beta, DA, DB)
     return lambda_plus(alpha, beta, DA, DB, kc)
+
+# Aliases for simulation script compatibility
+k_critical = critical_mode
+lambda_max = lambda_max_complex
 
 # ---- CGL coefficients ----
 
 def cgl_coefficients(alpha, beta, DA, DB):
+    """
+    Compute Complex Ginzburg–Landau coefficients:
+      returns (k_c, λ_c, D_complex, cubic_sign)
+    """
     kc = critical_mode(alpha, beta, DA, DB)
-    J = jacobian(alpha, beta)
-    L = J - np.diag([DA, DB]) * kc ** 2
-    w, VL = np.linalg.eig(L.T.conj())  # left eigenvectors in columns of VL
-    eigvals, VR = np.linalg.eig(L)      # right eigenvectors
+    # linear operator L = J - D k_c^2
+    fu, fv, gu, gv = jacobian(alpha, beta)
+    L = np.array([[fu - DA*kc*kc, fv], [gu, gv - DB*kc*kc]], dtype=complex)
+    # right eigenvectors & values
+    eigvals, VR = np.linalg.eig(L)
     idx = np.argmax(eigvals.real)
     lam_c = eigvals[idx]
     v = VR[:, idx]
+    # left eigenvector from transposed conjugate
+    _, VL = np.linalg.eig(L.T.conj())
     w = VL[:, idx]
-    w = w / (w @ v)  # normalise so w·v = 1
-
-    # complex diffusion coefficient (project Laplacian operator)
-    Dmat = -np.diag([DA, DB])
+    w = w / (w @ v)  # normalize
+    # complex diffusion projection
+    Dmat = np.diag([-DA, -DB])
     D_complex = w @ (Dmat @ v)
-
-    # cubic coefficient needs full third‑order tensor; here return sign proxy
+    # cubic proxy sign
     cubic_sign = np.sign(alpha + beta)
     return kc, lam_c, D_complex, cubic_sign
 
-# ---- plotting helpers ----
-
-_cmap = ListedColormap(["#1f497d", "#7eb6ff", "#ffb366", "#d62728"])
-
+# ---- regime classification & plotting ----
 
 def classify(lam, imag_eps=1e-4):
+    """
+    Linear regime from λ:
+      0 = stable (Re<0, Im≈0)
+      1 = damped osc (Re<0, Im≠0)
+      2 = growing osc (Re>0, Im≠0)
+      3 = static growth (Re>0, Im≈0)
+    """
     if lam.real > 0:
-        return 2 if abs(lam.imag) > imag_eps else 3  # orange or red
+        return 2 if abs(lam.imag) > imag_eps else 3
     else:
-        return 1 if abs(lam.imag) > imag_eps else 0  # light‑blue or dark‑blue
+        return 1 if abs(lam.imag) > imag_eps else 0
+
+_cmap = ListedColormap(["#1f497d", "#7eb6ff", "#ffb366", "#d62728"])
 
 
 def plot_regime_maps(d_ratio_list=(0.01, 0.03, 0.05, 0.07, 0.09, 0.11),
